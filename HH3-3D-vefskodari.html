@@ -35,6 +35,11 @@ input[type=range]{width:100%;accent-color:var(--red)}
 #panel.dhide{display:none}
 canvas#c{touch-action:none}
 .sw{display:inline-block;width:18px;height:18px;border-radius:50%;border:1px solid #888;margin:2px 3px 2px 0;cursor:pointer}.sw:hover{outline:2px solid #FA0000}
+.imp{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:6px}
+.imp label{flex:1;min-width:0}.imp .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:118px}
+.imp input[type=color]{padding:0;width:26px;height:22px}.imp button{padding:2px 7px}.imp .mh{flex-basis:100%;font-size:11px;color:#707070}
+.lb.im{color:#fff}
+body.dropping::after{content:'Slepptu skrá til að flytja inn (KML, KMZ, GeoJSON, DXF)';position:fixed;inset:12px;border:3px dashed #FA0000;background:rgba(255,255,255,.65);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;z-index:30;pointer-events:none}
 :root{--profh:250px}
 #profP{position:fixed;left:0;right:0;bottom:0;height:var(--profh);background:var(--panel);border-top:1px solid var(--line);z-index:4;display:none;flex-direction:column}
 #profP .ph{display:flex;align-items:center;gap:10px;padding:6px 12px;font-size:12px;border-bottom:1px solid var(--line)}
@@ -154,6 +159,15 @@ body.touch.walkmode #readout{left:170px}
     <div class="row n" style="margin-top:6px">Litur <input type="color" id="carColor" value="#f5f5f2" style="padding:0;width:34px;height:22px"></div>
     <div id="carSw" style="margin-top:2px"></div>
     <label class="cb" style="margin-top:4px"><input type="checkbox" id="carLogo" checked>Efla-merki á hurðum</label>
+  </div>
+  <div class="sec">
+    <h2>Innflutt gögn</h2>
+    <input type="file" id="impFile" accept=".kml,.kmz,.geojson,.json,.dxf" multiple style="display:none">
+    <button id="impBtn" style="width:100%">Flytja inn KML / KMZ / GeoJSON / DXF…</button>
+    <div class="row n" style="margin-top:6px">DXF hnit <select id="impCrs"><option value="isn93">ISN93</option><option value="wgs">WGS84 lon/lat</option></select></div>
+    <label class="cb"><input type="checkbox" id="impClamp" checked>Leggja á landið</label>
+    <div id="impList"></div>
+    <div class="mh" style="color:#707070;font-size:11px;margin-top:4px">Þú getur líka dregið skrá á gluggann. DXF: LINE, POLYLINE, LWPOLYLINE, POINT, TEXT, CIRCLE, ARC, 3DFACE (ASCII).</div>
   </div>
   <div class="sec">
     <h2>Hæðarýking: <span id="exv">1.0</span>×</h2>
@@ -7606,6 +7620,208 @@ const touchIn={jx:0,jy:0,steer:0};
   },{passive:false});
 }
 
+// ---------- import KML / KMZ / GeoJSON / DXF ----------
+const LCCf=(()=>{
+  const a=6378137,f=1/298.257222101,e=Math.sqrt(2*f-f*f),R=Math.PI/180;
+  const mm=p=>Math.cos(p)/Math.sqrt(1-e*e*Math.sin(p)**2);
+  const tt=p=>Math.tan(Math.PI/4-p/2)/Math.pow((1-e*Math.sin(p))/(1+e*Math.sin(p)),e/2);
+  const p1=64.25*R,p2=65.75*R,p0=65*R,l0=-19*R;
+  const n=(Math.log(mm(p1))-Math.log(mm(p2)))/(Math.log(tt(p1))-Math.log(tt(p2)));
+  const F=mm(p1)/(n*Math.pow(tt(p1),n)),r0=a*F*Math.pow(tt(p0),n);
+  return (lon,lat)=>{const r=a*F*Math.pow(tt(lat*R),n),th=n*(lon*R-l0);return [500000+r*Math.sin(th),500000+r0-r*Math.cos(th)];};
+})();
+const IMPCOL=['#e6194b','#3cb44b','#4363d8','#f58231','#911eb4','#008080','#9a6324','#800000'];
+const impLayers=[];let impSeq=0;
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const coordList=t=>(t||'').trim().split(/\s+/).map(q=>q.split(',').map(Number)).filter(c=>c.length>=2&&isFinite(c[0])&&isFinite(c[1]));
+const llz=c=>{const q=LCCf(c[0],c[1]);return [q[0],q[1],c.length>2&&isFinite(c[2])?c[2]:null];};
+function parseKML(txt){
+  const doc=new DOMParser().parseFromString(txt,'text/xml');
+  if(doc.getElementsByTagName('parsererror').length)throw new Error('KML skráin er ekki gild XML');
+  const out={lines:[],points:[],polys:[]},tx=el=>el?el.textContent:'';
+  for(const pm of doc.getElementsByTagName('Placemark')){
+    const nm=tx(pm.getElementsByTagName('name')[0]).trim();
+    for(const e of pm.getElementsByTagName('Point')){const c=coordList(tx(e.getElementsByTagName('coordinates')[0]));if(c[0])out.points.push({p:llz(c[0]),name:nm});}
+    for(const e of pm.getElementsByTagName('LineString')){const c=coordList(tx(e.getElementsByTagName('coordinates')[0]));if(c.length>1)out.lines.push(c.map(llz));}
+    for(const e of pm.getElementsByTagName('Polygon'))for(const r of e.getElementsByTagName('LinearRing')){const c=coordList(tx(r.getElementsByTagName('coordinates')[0]));if(c.length>2)out.polys.push(c.map(llz));}
+    for(const e of pm.getElementsByTagName('gx:Track')){const c=[...e.getElementsByTagName('gx:coord')].map(q=>q.textContent.trim().split(/\s+/).map(Number)).filter(q=>q.length>=2&&isFinite(q[0]));if(c.length>1)out.lines.push(c.map(llz));}
+  }
+  return out;
+}
+function parseGeoJSON(txt){
+  const j=JSON.parse(txt),out={lines:[],points:[],polys:[]};
+  const pr=c=>{let x=c[0],y=c[1];const z=c.length>2&&isFinite(c[2])?c[2]:null;if(Math.abs(x)<=360&&Math.abs(y)<=90){const q=LCCf(x,y);x=q[0];y=q[1];}return [x,y,z];};
+  const nameOf=pp=>pp?String(pp.name||pp.Name||pp.NAME||pp.title||pp.label||''):'';
+  const geom=(g,nm)=>{
+    if(!g)return;
+    switch(g.type){
+      case 'Point':out.points.push({p:pr(g.coordinates),name:nm});break;
+      case 'MultiPoint':g.coordinates.forEach(c=>out.points.push({p:pr(c),name:nm}));break;
+      case 'LineString':out.lines.push(g.coordinates.map(pr));break;
+      case 'MultiLineString':g.coordinates.forEach(l=>out.lines.push(l.map(pr)));break;
+      case 'Polygon':g.coordinates.forEach(r=>out.polys.push(r.map(pr)));break;
+      case 'MultiPolygon':g.coordinates.forEach(pl=>pl.forEach(r=>out.polys.push(r.map(pr))));break;
+      case 'GeometryCollection':g.geometries.forEach(x=>geom(x,nm));break;
+    }
+  };
+  const feat=f=>geom(f.geometry,nameOf(f.properties));
+  if(j.type==='FeatureCollection')j.features.forEach(feat);else if(j.type==='Feature')feat(j);else geom(j,'');
+  return out;
+}
+function parseDXF(txt,crs){
+  const L=txt.split(/\r?\n/),n=L.length,out={lines:[],points:[],polys:[]};
+  const P=(x,y,z)=>{if(crs==='wgs'){const q=LCCf(x,y);return [q[0],q[1],z===undefined?null:z];}return [x,y,z===undefined?null:z];};
+  let idx=0,inEnt=false,secPending=false,cur=null;const ents=[];
+  while(idx+1<n){
+    const c=parseInt(L[idx],10),v=L[idx+1];idx+=2;if(isNaN(c))continue;const vt=v.trim();
+    if(c===0){
+      secPending=(vt==='SECTION');
+      if(vt==='ENDSEC'&&inEnt){if(cur)ents.push(cur);break;}
+      if(inEnt){if(cur)ents.push(cur);cur={t:vt,x:[],y:[],z:[],g:{},ch:'',last:''};}
+      continue;
+    }
+    if(c===2&&secPending){secPending=false;if(vt==='ENTITIES'){inEnt=true;}continue;}
+    if(!inEnt||!cur)continue;
+    if(c===10)cur.x.push(parseFloat(v));else if(c===20)cur.y.push(parseFloat(v));else if(c===30)cur.z.push(parseFloat(v));
+    else if(c===1)cur.last=v;else if(c===3)cur.ch+=v;else if(c===2)cur.g[2]=vt;
+    else cur.g[c]=parseFloat(v);
+    if(ents.length>600000)throw new Error('Of margir hlutir í DXF-skránni (>600 þús.)');
+  }
+  const zz=(e,k)=>e.z[k]===undefined||isNaN(e.z[k])?null:e.z[k];
+  const clean=t=>t.replace(/\\[A-Za-z][^;]*;/g,'').replace(/\\P/g,' ').replace(/[{}]/g,'').trim();
+  let poly=null;
+  for(const e of ents){
+    switch(e.t){
+      case 'LINE':if(e.x.length&&e.g[11]!==undefined)out.lines.push([P(e.x[0],e.y[0],zz(e,0)),P(e.g[11],e.g[21],e.g[31]===undefined?null:e.g[31])]);break;
+      case 'LWPOLYLINE':{const pts=e.x.map((x,k)=>P(x,e.y[k],e.g[38]===undefined?null:e.g[38]));if(pts.length>1)(((e.g[70]||0)&1)?out.polys:out.lines).push(pts);break;}
+      case 'POLYLINE':poly={closed:((e.g[70]||0)&1)===1,mesh:((e.g[70]||0)&(16|64))!==0,pts:[]};break;
+      case 'VERTEX':if(poly&&!poly.mesh&&e.x.length&&!(((e.g[70]||0)&16)))poly.pts.push(P(e.x[0],e.y[0],zz(e,0)));break;
+      case 'SEQEND':if(poly&&poly.pts.length>1)(poly.closed?out.polys:out.lines).push(poly.pts);poly=null;break;
+      case 'POINT':if(e.x.length)out.points.push({p:P(e.x[0],e.y[0],zz(e,0)),name:''});break;
+      case 'INSERT':if(e.x.length)out.points.push({p:P(e.x[0],e.y[0],zz(e,0)),name:e.g[2]||''});break;
+      case 'TEXT':case 'MTEXT':if(e.x.length)out.points.push({p:P(e.x[0],e.y[0],zz(e,0)),name:clean(e.ch+e.last)});break;
+      case 'CIRCLE':if(e.x.length&&e.g[40]){const r=[];for(let k=0;k<48;k++){const a=k/48*2*Math.PI;r.push(P(e.x[0]+e.g[40]*Math.cos(a),e.y[0]+e.g[40]*Math.sin(a),zz(e,0)));}out.polys.push(r);}break;
+      case 'ARC':if(e.x.length&&e.g[40]){let a0=(e.g[50]||0)*Math.PI/180,a1=(e.g[51]||0)*Math.PI/180;if(a1<=a0)a1+=2*Math.PI;const m=Math.max(4,Math.ceil((a1-a0)/(Math.PI/24))),r=[];for(let k=0;k<=m;k++){const a=a0+(a1-a0)*k/m;r.push(P(e.x[0]+e.g[40]*Math.cos(a),e.y[0]+e.g[40]*Math.sin(a),zz(e,0)));}out.lines.push(r);}break;
+      case '3DFACE':if(e.x.length>=3){const r=[];for(let k=0;k<e.x.length;k++)r.push(P(e.x[k],e.y[k],zz(e,k)));out.polys.push(r);}break;
+    }
+  }
+  return out;
+}
+async function unzipKml(buf){
+  const dv=new DataView(buf),u8=new Uint8Array(buf);let eocd=-1;
+  for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65600);i--)if(dv.getUint32(i,true)===0x06054b50){eocd=i;break;}
+  if(eocd<0)throw new Error('KMZ skráin er ekki gild');
+  const cnt=dv.getUint16(eocd+10,true);let p=dv.getUint32(eocd+16,true),best=null;
+  for(let k=0;k<cnt;k++){
+    if(dv.getUint32(p,true)!==0x02014b50)break;
+    const method=dv.getUint16(p+10,true),csz=dv.getUint32(p+20,true),nl=dv.getUint16(p+28,true),el=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true),off=dv.getUint32(p+42,true);
+    const name=new TextDecoder().decode(u8.subarray(p+46,p+46+nl));
+    if(/\.kml$/i.test(name)&&(!best||/doc\.kml$/i.test(name)))best={method,csz,off};
+    p+=46+nl+el+cl;
+  }
+  if(!best)throw new Error('Engin .kml skrá fannst í KMZ');
+  const ln=dv.getUint16(best.off+26,true),le=dv.getUint16(best.off+28,true),start=best.off+30+ln+le,data=u8.subarray(start,start+best.csz);
+  if(best.method===0)return new TextDecoder().decode(data);
+  const stream=new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new TextDecoder().decode(await new Response(stream).arrayBuffer());
+}
+async function readImpFile(file){
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(file.size>150e6)throw new Error('Skráin er of stór (>150 MB)');
+  if(ext==='kmz')return parseKML(await unzipKml(await file.arrayBuffer()));
+  const txt=await file.text();
+  if(ext==='kml')return parseKML(txt);
+  if(ext==='geojson'||ext==='json')return parseGeoJSON(txt);
+  if(ext==='dxf')return parseDXF(txt,$('impCrs').value);
+  throw new Error('Óþekkt skráargerð: .'+ext);
+}
+function buildImp(Ly){
+  if(Ly.group){root.remove(Ly.group);Ly.group.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material&&o.material.isLineMaterial){const k=lineMats.indexOf(o.material);if(k>=0)lineMats.splice(k,1);}});}
+  Ly.labels.forEach(d=>d.remove());Ly.labels=[];
+  const g=new THREE.Group();g.visible=Ly.visible;root.add(g);Ly.group=g;
+  const clamp=$('impClamp').checked;let outside=0;
+  const yAt=(E,N,z)=>{const h=groundAt(E-OX,-(N-OY));if(clamp||z===null)return h===null?null:h+.8;return z;};
+  const seg=[];
+  const addPath=(pts,closed)=>{
+    const seq=closed&&pts.length>2?[...pts,pts[0]]:pts;let prev=null;
+    for(const p of seq){
+      if(prev){
+        const dE=p[0]-prev[0],dN=p[1]-prev[1],d=Math.hypot(dE,dN),nn=(clamp||p[2]===null||prev[2]===null)?Math.max(1,Math.ceil(d/15)):1;let a=prev;
+        for(let k=1;k<=nn;k++){
+          const t=k/nn,b=[prev[0]+dE*t,prev[1]+dN*t,(p[2]===null||prev[2]===null)?null:prev[2]+(p[2]-prev[2])*t];
+          const y0=yAt(a[0],a[1],a[2]),y1=yAt(b[0],b[1],b[2]);
+          if(y0===null||y1===null)outside++;else seg.push(a[0]-OX,y0,-(a[1]-OY),b[0]-OX,y1,-(b[1]-OY));
+          a=b;
+        }
+      }
+      prev=p;
+    }
+  };
+  Ly.src.lines.forEach(l=>addPath(l,false));Ly.src.polys.forEach(r=>addPath(r,true));
+  if(seg.length){const ln=makeLines(new Float32Array(seg),Ly.color,2.4);ln.material.depthTest=false;ln.material.transparent=true;ln.material.resolution.set(innerWidth,innerHeight);ln.renderOrder=8;g.add(ln);}
+  const pp=[];
+  for(const q of Ly.src.points){
+    const y=yAt(q.p[0],q.p[1],q.p[2]);if(y===null){outside++;continue;}
+    pp.push(q.p[0]-OX,y,-(q.p[1]-OY));
+    if(q.name&&Ly.labels.length<500){const d=document.createElement('div');d.className='lb im';d.textContent=q.name;d.style.background=Ly.color;$('labels').appendChild(d);d._p=[q.p[0]-OX,y+3,-(q.p[1]-OY)];Ly.labels.push(d);}
+  }
+  if(pp.length){
+    const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(pp,3));
+    const pts=new THREE.Points(geo,new THREE.PointsMaterial({color:Ly.color,size:9,sizeAttenuation:false,depthTest:false,transparent:true}));pts.frustumCulled=false;pts.renderOrder=9;g.add(pts);
+  }
+  Ly.outside=outside;
+  Ly.stats=`${Ly.src.lines.length} línur · ${Ly.src.points.length} punktar · ${Ly.src.polys.length} svæði`+(outside?` · ${outside} hlutar utan landlíkans`:'');
+}
+const v3i=new THREE.Vector3();
+function updateImpLabels(){
+  if(!impLayers.length)return;const ex=root.scale.y,w=innerWidth,h=innerHeight;
+  for(const Ly of impLayers)for(const d of Ly.labels){
+    if(!Ly.visible){d.style.display='none';continue;}
+    v3i.set(d._p[0],d._p[1]*ex,d._p[2]);
+    if(camera.position.distanceTo(v3i)>6000){d.style.display='none';continue;}
+    v3i.project(camera);
+    if(v3i.z>1||Math.abs(v3i.x)>1.05||Math.abs(v3i.y)>1.05){d.style.display='none';continue;}
+    d.style.display='block';d.style.left=((v3i.x+1)/2*w)+'px';d.style.top=((1-v3i.y)/2*h-6)+'px';
+  }
+}
+function flyImp(Ly){
+  let a=1e18,b=-1e18,c=1e18,d=-1e18;
+  const add=p=>{if(p[0]<a)a=p[0];if(p[0]>b)b=p[0];if(p[1]<c)c=p[1];if(p[1]>d)d=p[1];};
+  Ly.src.lines.forEach(l=>l.forEach(add));Ly.src.polys.forEach(l=>l.forEach(add));Ly.src.points.forEach(q=>add(q.p));
+  if(a>b)return;const E=(a+b)/2,N=(c+d)/2,ext=Math.max(b-a,d-c,300),ex=root.scale.y,gz=heightAt(E,N)??300;
+  flyTo(new THREE.Vector3(E-OX,gz*ex,-(N-OY)),new THREE.Vector3(E-OX+ext*.25,(gz+ext*.8+200)*ex,-(N-OY)+ext*.9+250));
+}
+function renderImpList(){
+  const box=$('impList');box.innerHTML='';
+  for(const Ly of impLayers){
+    const row=document.createElement('div');row.className='imp';
+    row.innerHTML=`<label class="cb"><input type="checkbox" ${Ly.visible?'checked':''}><span class="nm" title="${esc(Ly.name)}">${esc(Ly.name)}</span></label><input type="color" value="${Ly.color}"><button title="Fljúga þangað">⌖</button><button title="Eyða">×</button><div class="mh">${esc(Ly.stats)}</div>`;
+    const [cb,col,fly,del]=[row.querySelector('input[type=checkbox]'),row.querySelector('input[type=color]'),row.querySelectorAll('button')[0],row.querySelectorAll('button')[1]];
+    cb.onchange=()=>{Ly.visible=cb.checked;Ly.group.visible=cb.checked;};
+    col.onchange=()=>{Ly.color=col.value;buildImp(Ly);renderImpList();};
+    fly.onclick=()=>flyImp(Ly);
+    del.onclick=()=>{impLayers.splice(impLayers.indexOf(Ly),1);root.remove(Ly.group);Ly.labels.forEach(d=>d.remove());renderImpList();};
+    box.appendChild(row);
+  }
+}
+async function importFiles(files){
+  for(const f of files){
+    try{
+      const src=await readImpFile(f);
+      if(!src.lines.length&&!src.points.length&&!src.polys.length)throw new Error('Engin gögn fundust í skránni');
+      const Ly={id:++impSeq,name:f.name.replace(/\.[^.]+$/,''),color:IMPCOL[(impSeq-1)%IMPCOL.length],src,visible:true,group:null,labels:[],stats:''};
+      impLayers.push(Ly);buildImp(Ly);renderImpList();flyImp(Ly);
+      showHint(`${f.name}: ${Ly.stats}`,6000);
+    }catch(err){showHint('Innflutningur mistókst: '+err.message,7000);console.warn(err);}
+  }
+}
+$('impBtn').onclick=()=>$('impFile').click();
+$('impFile').onchange=e=>{importFiles([...e.target.files]);e.target.value='';};
+$('impClamp').onchange=()=>{impLayers.forEach(buildImp);renderImpList();};
+addEventListener('dragover',e=>{if(e.dataTransfer&&[...e.dataTransfer.types].includes('Files')){e.preventDefault();document.body.classList.add('dropping');}});
+addEventListener('dragleave',e=>{if(!e.relatedTarget)document.body.classList.remove('dropping');});
+addEventListener('drop',e=>{e.preventDefault();document.body.classList.remove('dropping');if(e.dataTransfer&&e.dataTransfer.files.length)importFiles([...e.dataTransfer.files]);});
+
 // ---------- loop ----------
 function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();
   lineMats.forEach(m=>m.resolution.set(w,h));}
@@ -7637,7 +7853,7 @@ function frame(now){
     if(v3.z>1||Math.abs(v3.x)>1.05||Math.abs(v3.y)>1.05){el.style.display='none';continue;}
     el.style.display='block';el.style.left=((v3.x+1)/2*w)+'px';el.style.top=((1-v3.y)/2*h-8)+'px';
   }
-  updateMeasLabels();updateNav(dt);updateDust(dt);
+  updateMeasLabels();updateNav(dt);updateDust(dt);updateImpLabels();
   renderer.render(scene,camera);requestAnimationFrame(frame);
 }
 updateLOD();setSource();
